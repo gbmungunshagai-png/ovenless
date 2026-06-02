@@ -17,8 +17,17 @@ export interface OvenlessConfig {
   aws?: OvenlessAwsConfig;
 }
 
-export function defineConfig<T extends OvenlessConfig>(config: T): T {
-  return config;
+export function defineConfig<T extends OvenlessConfig>(config: T): Readonly<T> {
+  if (!config?.router) {
+    throw new Error('defineConfig: "router" is required');
+  }
+  if (typeof config.service !== "string" || config.service.trim() === "") {
+    throw new Error('defineConfig: "service" must be a non-empty string');
+  }
+  return Object.freeze({
+    ...config,
+    service: config.service.trim(),
+  }) as Readonly<T>;
 }
 
 export function resolveProfileStage(profile: OvenlessProfile): string {

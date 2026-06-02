@@ -1,18 +1,40 @@
 import { createHandler } from "../handler.ts";
-import { loadConfig } from "./load-config.ts";
-import { loadProfileEnv } from "./env.ts";
 import type { OvenlessProfile } from "../config.ts";
+import { applyEnv, loadProfileEnv, logLoadedEnvironments } from "./env.ts";
+import { loadConfig } from "./load-config.ts";
+
+export function parseOvenlessProfile(raw: string | undefined): OvenlessProfile {
+  const profile = raw ?? "development";
+  if (profile !== "development" && profile !== "staging" && profile !== "production") {
+    throw new Error(
+      `Invalid OVENLESS_PROFILE: ${profile} (expected development, staging, or production)`,
+    );
+  }
+  return profile;
+}
+
+export function resolvePort(raw: string | number | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`Invalid port: ${String(raw)} (expected integer 1–65535)`);
+  }
+  return n;
+}
 
 export async function runDevServer(profile: OvenlessProfile): Promise<void> {
-  loadProfileEnv(profile);
+  const loaded = loadProfileEnv(profile);
+  logLoadedEnvironments(loaded, "start");
+  applyEnv(loaded.env, true);
   const config = await loadConfig();
 
   const handler = createHandler(config.router, {
     title: config.title ?? config.service,
     version: config.version ?? "0.1.0",
+    exposeErrorDetails: profile === "development",
   });
 
-  const port = Number(process.env.PORT ?? config.port ?? 3000);
+  const port = resolvePort(process.env.PORT ?? config.port, 3000);
 
   Bun.serve({
     port,
@@ -21,10 +43,23 @@ export async function runDevServer(profile: OvenlessProfile): Promise<void> {
       let body: unknown;
 
       if (request.method !== "GET" && request.method !== "HEAD") {
-        try {
-          body = await request.json();
-        } catch {
+        const text = await request.text();
+        if (text.length === 0) {
           body = undefined;
+        } else {
+          try {
+            body = JSON.parse(text) as unknown;
+          } catch {
+            return new Response(
+              JSON.stringify({
+                error: { code: "INVALID_JSON", message: "Malformed JSON body" },
+              }),
+              {
+                status: 400,
+                headers: { "Content-Type": "application/json" },
+              },
+            );
+          }
         }
       }
 
@@ -49,8 +84,9 @@ export async function runDevServer(profile: OvenlessProfile): Promise<void> {
 }
 
 if (import.meta.main) {
-  void (async () => {
-    const profile = (process.env.OVENLESS_PROFILE ?? "development") as OvenlessProfile;
-    await runDevServer(profile);
-  })();
+  const profile = parseOvenlessProfile(process.env.OVENLESS_PROFILE);
+  runDevServer(profile).catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
 }

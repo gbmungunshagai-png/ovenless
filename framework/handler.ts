@@ -4,13 +4,16 @@ import {
   isProcedure,
   isRouter,
   parseProcedurePath,
+  queryInputFromSearchParams,
   resolveProcedure,
   type Router,
 } from "./core.ts";
 import { generateOpenApiDocument, renderScalarHtml } from "./docs/openapi.ts";
 
+export type HttpMethod = "GET" | "POST" | "OPTIONS" | "HEAD";
+
 export interface HttpRequest {
-  method: string;
+  method: HttpMethod | string;
   path: string;
   body?: unknown;
   headers?: Record<string, string | undefined>;
@@ -26,11 +29,32 @@ export interface OvenlessHandlerOptions {
   title?: string;
   version?: string;
   cors?: boolean;
+  /** When false (default), 500 responses omit handler error text */
+  exposeErrorDetails?: boolean;
 }
+
+const ALLOWED_METHODS = new Set<HttpMethod>(["GET", "POST", "OPTIONS", "HEAD"]);
+
+/** Sentinel set by AWS adapter when JSON body parsing fails */
+export const INVALID_JSON_BODY = Symbol("ovenless.invalidJsonBody");
 
 const DEFAULT_HEADERS: Record<string, string> = {
   "Content-Type": "application/json",
 };
+
+export function getHeader(
+  headers: Record<string, string | undefined> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined;
+  const direct = headers[name];
+  if (direct !== undefined) return direct;
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === lower) return value;
+  }
+  return undefined;
+}
 
 function corsHeaders(origin?: string): Record<string, string> {
   return {
@@ -38,6 +62,21 @@ function corsHeaders(origin?: string): Record<string, string> {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
+}
+
+export class BodyValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BodyValidationError";
+  }
+}
+
+function safeJsonBody(data: unknown): string {
+  try {
+    return JSON.stringify(data);
+  } catch {
+    throw new Error("Response is not JSON-serializable");
+  }
 }
 
 function jsonResponse(
@@ -48,7 +87,7 @@ function jsonResponse(
   return {
     statusCode,
     headers: { ...DEFAULT_HEADERS, ...extraHeaders },
-    body: JSON.stringify(data),
+    body: safeJsonBody(data),
   };
 }
 
@@ -89,14 +128,64 @@ function normalizePath(path: string): string {
   return withoutQuery.replace(/\/+$/, "") || "/";
 }
 
+function mapHandlerError(
+  err: unknown,
+  exposeDetails: boolean,
+): { message: string; details?: unknown } {
+  if (err instanceof ZodError) {
+    return {
+      message: "Response validation failed",
+      details: exposeDetails ? err.issues : undefined,
+    };
+  }
+  if (err instanceof Error) {
+    return {
+      message: exposeDetails ? err.message : "An unexpected error occurred",
+    };
+  }
+  return { message: "An unexpected error occurred" };
+}
+
+export function normalizeRawInput(method: string, path: string, body: unknown): unknown {
+  if (body === INVALID_JSON_BODY) {
+    throw new BodyValidationError("Request body must be valid JSON");
+  }
+
+  if (method === "GET") {
+    const queryString = path.split("?")[1];
+    return queryString ? queryInputFromSearchParams(new URLSearchParams(queryString)) : {};
+  }
+
+  if (body === undefined) return {};
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new BodyValidationError("Request body must be a JSON object");
+  }
+  return body;
+}
+
 export function createHandler(router: Router, options: OvenlessHandlerOptions = {}) {
-  const { title = "Ovenless API", version = "1.0.0", cors = true } = options;
-  const procedures = collectProcedures(router);
+  const {
+    title = "Ovenless API",
+    version = "1.0.0",
+    cors = true,
+    exposeErrorDetails = false,
+  } = options;
 
   return async (request: HttpRequest): Promise<HttpResponse> => {
-    const origin = request.headers?.origin;
+    const origin = getHeader(request.headers, "Origin");
     const corsHdrs = cors ? corsHeaders(origin) : {};
-    const method = request.method.toUpperCase();
+    const method = (request.method ?? "").trim().toUpperCase();
+
+    if (!ALLOWED_METHODS.has(method as HttpMethod)) {
+      return errorResponse(
+        405,
+        "METHOD_NOT_ALLOWED",
+        `Unsupported method: ${request.method}`,
+        undefined,
+        corsHdrs,
+      );
+    }
+
     const path = normalizePath(request.path);
 
     if (method === "OPTIONS") {
@@ -113,6 +202,7 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
     }
 
     if (path === "/" && method === "GET") {
+      const procedures = collectProcedures(router);
       return jsonResponse(
         200,
         {
@@ -127,6 +217,10 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
         },
         corsHdrs,
       );
+    }
+
+    if (method === "HEAD") {
+      return { statusCode: 200, headers: corsHdrs };
     }
 
     const pathSegments = parseProcedurePath(path);
@@ -158,15 +252,14 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
       );
     }
 
-    let rawInput: unknown = {};
-
-    if (method === "GET") {
-      const queryString = request.path.split("?")[1];
-      if (queryString) {
-        rawInput = Object.fromEntries(new URLSearchParams(queryString));
+    let rawInput: unknown;
+    try {
+      rawInput = normalizeRawInput(method, request.path, request.body);
+    } catch (err) {
+      if (err instanceof BodyValidationError) {
+        return errorResponse(400, "INVALID_BODY", err.message, undefined, corsHdrs);
       }
-    } else {
-      rawInput = request.body ?? {};
+      throw err;
     }
 
     let input: unknown;
@@ -190,8 +283,12 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
       const output = procedure.output.parse(result);
       return jsonResponse(200, output, corsHdrs);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      return errorResponse(500, "INTERNAL_ERROR", message, undefined, corsHdrs);
+      if (err instanceof Error && err.message === "Response is not JSON-serializable") {
+        const { message, details } = mapHandlerError(err, exposeErrorDetails);
+        return errorResponse(500, "INTERNAL_ERROR", message, details, corsHdrs);
+      }
+      const { message, details } = mapHandlerError(err, exposeErrorDetails);
+      return errorResponse(500, "INTERNAL_ERROR", message, details, corsHdrs);
     }
   };
 }

@@ -4,7 +4,13 @@ import type {
   Context,
 } from "aws-lambda";
 import type { Router } from "../core.ts";
-import { createHandler, type HttpResponse, type OvenlessHandlerOptions } from "../handler.ts";
+import {
+  createHandler,
+  getHeader,
+  INVALID_JSON_BODY,
+  type HttpResponse,
+  type OvenlessHandlerOptions,
+} from "../handler.ts";
 
 function toApiGatewayResult(response: HttpResponse): APIGatewayProxyResult {
   return {
@@ -21,19 +27,42 @@ function parseBody(event: APIGatewayProxyEvent): unknown {
     ? Buffer.from(event.body, "base64").toString("utf8")
     : event.body;
 
+  const contentType = getHeader(event.headers as Record<string, string | undefined>, "content-type") ?? "";
+  const trimmed = raw.trimStart();
+  const likelyJson =
+    contentType.includes("application/json") ||
+    trimmed.startsWith("{") ||
+    trimmed.startsWith("[");
+
+  if (!likelyJson) return raw;
+
   try {
-    return JSON.parse(raw);
+    return JSON.parse(raw) as unknown;
   } catch {
-    return raw;
+    return INVALID_JSON_BODY;
   }
 }
 
 function buildPath(event: APIGatewayProxyEvent): string {
-  const proxyPath = event.pathParameters?.proxy;
-  if (proxyPath) return `/${proxyPath}`;
+  if (event.pathParameters?.proxy != null) {
+    return `/${event.pathParameters.proxy}`;
+  }
 
-  const stagelessPath = event.path.replace(/^\/[^/]+/, "") || "/";
-  return stagelessPath;
+  const ctx = event.requestContext as { http?: { path?: string } } | undefined;
+  if (ctx?.http?.path) return ctx.http.path;
+
+  return event.path || "/";
+}
+
+function buildQueryString(
+  params: APIGatewayProxyEvent["queryStringParameters"],
+): string {
+  if (!params) return "";
+  const entries = Object.entries(params).filter(
+    (entry): entry is [string, string] => entry[1] != null,
+  );
+  if (entries.length === 0) return "";
+  return `?${new URLSearchParams(entries).toString()}`;
 }
 
 export function createAwsHandler(router: Router, options: OvenlessHandlerOptions = {}) {
@@ -44,9 +73,7 @@ export function createAwsHandler(router: Router, options: OvenlessHandlerOptions
     _context: Context,
   ): Promise<APIGatewayProxyResult> => {
     const path = buildPath(event);
-    const query = event.queryStringParameters
-      ? `?${new URLSearchParams(event.queryStringParameters as Record<string, string>).toString()}`
-      : "";
+    const query = buildQueryString(event.queryStringParameters);
 
     const response = await handler({
       method: event.httpMethod,

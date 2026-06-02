@@ -93,6 +93,46 @@ describe("HTTP handler", () => {
     expect(res.headers?.["Content-Type"]).toContain("text/html");
     expect(res.body).toContain("scalar");
   });
+
+  test("rejects non-object JSON body", async () => {
+    const res = await handler({
+      method: "POST",
+      path: "/health",
+      body: [],
+    });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body ?? "{}");
+    expect(body.error.code).toBe("INVALID_BODY");
+  });
+
+  test("rejects unsupported HTTP methods", async () => {
+    const res = await handler({ method: "PATCH", path: "/health" });
+    expect(res.statusCode).toBe(405);
+    expect(JSON.parse(res.body ?? "{}").error.code).toBe("METHOD_NOT_ALLOWED");
+  });
+
+  test("hides handler error details by default", async () => {
+    const res = await handler({
+      method: "POST",
+      path: "/users/getById",
+      body: { id: "missing" },
+    });
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body ?? "{}");
+    expect(body.error.message).toBe("An unexpected error occurred");
+  });
+
+  test("exposes handler error details when enabled", async () => {
+    const verbose = createHandler(testRouter, { exposeErrorDetails: true });
+    const res = await verbose({
+      method: "POST",
+      path: "/users/getById",
+      body: { id: "missing" },
+    });
+    expect(res.statusCode).toBe(500);
+    const body = JSON.parse(res.body ?? "{}");
+    expect(body.error.message).toContain("User not found");
+  });
 });
 
 describe("type-safe client", () => {
@@ -115,6 +155,7 @@ describe("type-safe client", () => {
 
     const client = createClient<typeof testRouter>({
       url: `http://localhost:${server.port}`,
+      router: testRouter,
     });
 
     const health = await client.health();

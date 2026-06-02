@@ -6,7 +6,14 @@ import {
 import { z } from "zod";
 import { collectProcedures, isVoidInput, type Router } from "../core.ts";
 
-extendZodWithOpenApi(z);
+let openApiExtended = false;
+
+function ensureOpenApi(): void {
+  if (!openApiExtended) {
+    extendZodWithOpenApi(z);
+    openApiExtended = true;
+  }
+}
 
 export interface OpenApiOptions {
   title: string;
@@ -14,6 +21,7 @@ export interface OpenApiOptions {
 }
 
 export function generateOpenApiDocument(router: Router, options: OpenApiOptions) {
+  ensureOpenApi();
   const registry = new OpenAPIRegistry();
   const procedures = collectProcedures(router);
 
@@ -65,8 +73,16 @@ export function generateOpenApiDocument(router: Router, options: OpenApiOptions)
   });
 }
 
+function escapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export function renderScalarHtml(openApiUrl: string): string {
-  const escapedUrl = openApiUrl.replace(/"/g, "&quot;");
+  const escapedUrl = escapeHtmlAttr(openApiUrl);
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

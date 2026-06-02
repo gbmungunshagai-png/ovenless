@@ -1,8 +1,18 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { OvenlessConfig } from "../config.ts";
+import { assertRouterShape } from "../handler.ts";
 
-const CONFIG_FILES = ["ovenless.config.ts", "ovenless.config.js"] as const;
+export const CONFIG_FILES = ["ovenless.config.ts", "ovenless.config.js"] as const;
+
+export type ConfigFileName = (typeof CONFIG_FILES)[number];
+
+export function findConfigFile(root = process.cwd()): ConfigFileName | null {
+  for (const file of CONFIG_FILES) {
+    if (existsSync(join(root, file))) return file;
+  }
+  return null;
+}
 
 export async function loadConfig(root = process.cwd()): Promise<OvenlessConfig> {
   for (const file of CONFIG_FILES) {
@@ -16,11 +26,16 @@ export async function loadConfig(root = process.cwd()): Promise<OvenlessConfig> 
       throw new Error(`${file} must default-export defineConfig({ router, service, ... })`);
     }
 
-    if (!config.service) {
+    if (typeof config.service !== "string" || config.service.trim() === "") {
       throw new Error(`${file} is missing required "service" field`);
     }
 
-    return config as OvenlessConfig;
+    assertRouterShape(config.router);
+
+    return {
+      ...config,
+      service: config.service.trim(),
+    } as OvenlessConfig;
   }
 
   throw new Error(

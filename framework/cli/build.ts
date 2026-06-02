@@ -1,29 +1,39 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type OvenlessProfile, resolveProfileStage } from "../config.ts";
-import { loadProfileEnv } from "./env.ts";
-import { loadConfig } from "./load-config.ts";
+import { applyEnv, loadProfileEnv, logLoadedEnvironments } from "./env.ts";
+import { findConfigFile, loadConfig } from "./load-config.ts";
 import { writeServerlessYaml } from "./serverless.ts";
 
-const HANDLER_ENTRY = `import { createAwsHandler } from "ovenless";
-import config from "../ovenless.config.ts";
+function buildHandlerEntry(configFile: string): string {
+  const configImport = `../${configFile}`;
+  return `import { createAwsHandler } from "ovenless";
+import config from "${configImport}";
 
 export const awsHandler = createAwsHandler(config.router, {
   title: config.title ?? config.service,
   version: config.version ?? "0.1.0",
 });
 `;
+}
 
 export async function runBuild(profile: OvenlessProfile, root = process.cwd()): Promise<void> {
-  const env = loadProfileEnv(profile, root);
+  const loaded = loadProfileEnv(profile, root);
+  logLoadedEnvironments(loaded, "build");
+  applyEnv(loaded.env, true);
   const config = await loadConfig(root);
+
+  const configFile = findConfigFile(root);
+  if (!configFile) {
+    throw new Error("No ovenless.config.ts or ovenless.config.js found");
+  }
 
   const ovenlessDir = join(root, ".ovenless");
   mkdirSync(ovenlessDir, { recursive: true });
   mkdirSync(join(root, "dist"), { recursive: true });
 
   const entryPath = join(ovenlessDir, "handler.entry.ts");
-  writeFileSync(entryPath, HANDLER_ENTRY, "utf8");
+  writeFileSync(entryPath, buildHandlerEntry(configFile), "utf8");
 
   const build = await Bun.build({
     entrypoints: [entryPath],
@@ -41,10 +51,10 @@ export async function runBuild(profile: OvenlessProfile, root = process.cwd()): 
     throw new Error("Build failed");
   }
 
-  const serverlessPath = writeServerlessYaml(config, profile, env, root);
+  const serverlessPath = writeServerlessYaml(config, profile, loaded.env, root);
 
   console.log(`\n  Ovenless build complete (${profile})\n`);
-  console.log(`  Lambda    dist/handler.js`);
+  console.log(`  Lambda    dist/handler.js (Node ${config.aws?.runtime ?? "nodejs20.x"})`);
   console.log(`  Deploy    ${serverlessPath}`);
   console.log(`  Stage     ${config.aws?.stage ?? resolveProfileStage(profile)}\n`);
 }

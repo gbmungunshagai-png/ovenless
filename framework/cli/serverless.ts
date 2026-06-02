@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { type OvenlessConfig, type OvenlessProfile, resolveProfileStage } from "../config.ts";
 
 function yamlString(value: string): string {
-  if (/^[A-Za-z0-9_./-]+$/.test(value)) return value;
   return JSON.stringify(value);
 }
 

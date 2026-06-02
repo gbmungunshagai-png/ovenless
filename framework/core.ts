@@ -1,7 +1,7 @@
 import type { ZodType } from "zod";
 import { z } from "zod";
 
-export const PROCEDURE_MARKER = Symbol("ovenless.procedure");
+export const PROCEDURE_MARKER = Symbol.for("ovenless.procedure");
 
 export type ProcedureType = "query" | "mutation";
 
@@ -25,7 +25,7 @@ export interface Router<T extends RouterRecord = RouterRecord> {
   procedures: T;
 }
 
-export const ROUTER_MARKER = Symbol("ovenless.router");
+export const ROUTER_MARKER = Symbol.for("ovenless.router");
 
 /** Default schema for procedures with no input */
 export const voidInput = z.object({});
@@ -49,7 +49,25 @@ export type IsOptionalClientInput<T> = [T] extends [void]
         : false;
 
 export function isVoidInput(schema: ZodType, procedure?: Procedure): boolean {
-  return procedure?.__voidInput === true || schema === voidInput;
+  if (procedure?.__voidInput === true) return true;
+  if (schema === voidInput) return true;
+  if (schema instanceof z.ZodObject) {
+    const shape = schema.shape;
+    return Object.keys(shape).length === 0;
+  }
+  return false;
+}
+
+/** Parse URL query params; duplicate keys become string arrays */
+export function queryInputFromSearchParams(
+  params: URLSearchParams,
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const key of new Set(params.keys())) {
+    const all = params.getAll(key);
+    out[key] = all.length === 1 ? all[0]! : all;
+  }
+  return out;
 }
 
 export type InferProcedureClient<I extends ZodType, O extends ZodType> =
@@ -107,7 +125,7 @@ export function query<TInput extends ZodType, TOutput extends ZodType>(
 export function query(
   config: QueryNoInput<ZodType> | QueryWithInput<ZodType, ZodType>,
 ): Procedure<ZodType, ZodType> | VoidInputProcedure {
-  if ("input" in config && config.input !== undefined) {
+  if ("input" in config && config.input != null) {
     const withInput = config as QueryWithInput<ZodType, ZodType>;
     return {
       [PROCEDURE_MARKER]: true,
@@ -141,7 +159,7 @@ export function mutation<TInput extends ZodType, TOutput extends ZodType>(
 export function mutation(
   config: MutationNoInput<ZodType> | MutationWithInput<ZodType, ZodType>,
 ): Procedure<ZodType, ZodType> | VoidInputProcedure {
-  if ("input" in config && config.input !== undefined) {
+  if ("input" in config && config.input != null) {
     const withInput = config as MutationWithInput<ZodType, ZodType>;
     return {
       [PROCEDURE_MARKER]: true,
