@@ -67,6 +67,27 @@ describe("CLI parse-args", () => {
     const parsed = parseCli(["bun", "ovenless", "build"]);
     expect(parsed.flags.profile).toBe("production");
   });
+
+  test("parses certs --profile staging --comment", () => {
+    const parsed = parseCli([
+      "bun",
+      "ovenless",
+      "certs",
+      "--profile",
+      "staging",
+      "--comment",
+      "my-api",
+    ]);
+    expect(parsed.command).toBe("certs");
+    expect(parsed.flags.profile).toBe("staging");
+    expect(parsed.flags.comment).toBe("my-api");
+  });
+
+  test("parses generate-certs alias", () => {
+    const parsed = parseCli(["bun", "ovenless", "generate-certs", "--force"]);
+    expect(parsed.command).toBe("generate-certs");
+    expect(parsed.flags.force).toBe(true);
+  });
 });
 
 describe("CLI env loading", () => {

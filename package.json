@@ -1,12 +1,30 @@
 {
   "name": "ovenless",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
-  "license": "MIT",
   "author": "G.B.Mungunshagai",
   "private": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "keywords": [
+    "ovenless",
+    "trpc",
+    "backend",
+    "lambda",
+    "serverless",
+    "typescript",
+    "openapi",
+    "scalar",
+    "bun",
+    "aws",
+    "aws-lambda",
+    "aws-api-gateway"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gbmungunshagai-png/ovenless"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,7 +39,8 @@
     "ovenless": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "bun run build.ts",

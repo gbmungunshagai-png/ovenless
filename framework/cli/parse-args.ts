@@ -5,6 +5,8 @@ const PROFILES = new Set<OvenlessProfile>(["development", "staging", "production
 export interface CliFlags {
   watch: boolean;
   profile: OvenlessProfile;
+  comment?: string;
+  force: boolean;
 }
 
 export interface ParsedCli {
@@ -14,7 +16,7 @@ export interface ParsedCli {
 
 export function parseCli(argv: string[]): ParsedCli {
   const args = argv.slice(2);
-  const flags: CliFlags = { watch: false, profile: "development" };
+  const flags: CliFlags = { watch: false, profile: "development", force: false };
   let profileExplicit = false;
 
   let command: string | undefined;
@@ -39,6 +41,18 @@ export function parseCli(argv: string[]): ParsedCli {
       continue;
     }
 
+    if (arg === "--comment" || arg === "-c") {
+      const value = args[++i];
+      if (!value) throw new Error(`${arg} requires a value`);
+      flags.comment = value;
+      continue;
+    }
+
+    if (arg === "--force" || arg === "-f") {
+      flags.force = true;
+      continue;
+    }
+
     if (arg.startsWith("-")) {
       throw new Error(`Unknown flag: ${arg}`);
     }
@@ -50,6 +64,10 @@ export function parseCli(argv: string[]): ParsedCli {
 
   if (command === "build" && !profileExplicit) {
     flags.profile = "production";
+  }
+
+  if ((command === "certs" || command === "generate-certs") && !profileExplicit) {
+    flags.profile = "development";
   }
 
   return { command, flags };

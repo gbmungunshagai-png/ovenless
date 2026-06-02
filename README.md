@@ -1,134 +1,593 @@
-Context: Project Ovenless
+# Ovenless
 
-Ovenless is a lightweight, end-to-end type-safe RPC framework designed specifically for the AWS Serverless Framework (v3) ecosystem. It provides the seamless developer experience (DX) of tRPC—sharing type definitions directly from backend to frontend without any build-time code generation (no "preheating" or "baking" required)—while automatically publishing fully-interactive API documentation via Scalar using standard OpenAPI specifications generated from runtime Zod validation schemas.
+Type-safe RPC for AWS Serverless Framework v3. One Lambda, one router, Zod validation, OpenAPI docs, and a proxy client with full TypeScript inference—no code generation.
 
-🎯 The Vision
+[![npm version](https://img.shields.io/npm/v/ovenless)](https://www.npmjs.com/package/ovenless)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Bun](https://img.shields.io/badge/runtime-Bun-f9f1e1)](https://bun.sh)
 
-Modern web development demands rapid iteration, reliable contracts, and painless integration.
-While existing tools solve parts of this puzzle, they introduce friction in a serverless AWS environment:
+## Why Ovenless
 
-tRPC is fantastic for internal TypeScript-only contracts but lacks out-of-the-box support for generating public-facing OpenAPI specifications without heavy plugins.
+| Need                             | Ovenless                                                                         |
+| -------------------------------- | -------------------------------------------------------------------------------- |
+| End-to-end types without codegen | `createClient<typeof router>()` infers inputs/outputs from your Zod schemas      |
+| Single Lambda, many routes       | Catch-all HTTP API (`/{proxy+}`) routes to one handler—fewer cold starts         |
+| Public API docs                  | `GET /docs` (Scalar) and `GET /openapi.json` generated from the same Zod schemas |
+| Serverless v3 deploy             | `ovenless build` emits `dist/handler.js` + `serverless.yml`                      |
 
-Traditional OpenAPI/Swagger frameworks require manual definition of JSON/YAML schemas or complex decorator patterns, creating a disconnect between execution logic and documentation.
+**Requirements:** [Bun](https://bun.sh) for CLI and local dev · Node.js 20+ Lambda runtime (default) · TypeScript 5+ · [Zod](https://zod.dev) 4+
 
-Serverless v3 APIs are typically deployed as separate HTTP routes mapped directly to individual Lambda functions, which scatters type-checking across disconnected boundaries.
+---
 
-Ovenless merges these concepts into a single cohesive SDK. Developers define a unified router schema on the backend. This single source of truth yields:
+## Quick start
 
-Fully type-inferred frontend clients with autocomplete and validation errors caught at compile-time.
+### 1. Create a project
 
-Runtime input validation powered by Zod before lambda invocation reaches business logic.
+```bash
+mkdir my-api && cd my-api
+bun init -y
+bun add ovenless zod
+bun add -d typescript @types/bun
+```
 
-Beautiful, interactive API playgrounds served via Scalar at /docs.
+### 2. Define the router
 
-Zero-configuration deployment to AWS Lambda and API Gateway via Serverless Framework v3.
+`src/router.ts`:
 
-🏗️ Architectural Overview
+```typescript
+import { z } from "zod";
+import { createRouter, mutation, query } from "ovenless";
 
-Ovenless operates as a single-entry HTTP multiplexer deployed inside a Lambda function. It acts as an internal router that catches incoming requests, validates payloads, and translates TypeScript types for the frontend proxy.
+const users = [
+  { id: "1", name: "Alice", email: "alice@example.com" },
+  { id: "2", name: "Bob", email: "bob@example.com" },
+];
 
-┌────────────────────────────────────────────────────────┐
-│ Frontend Client │
-└───────────────────────────┬────────────────────────────┘
-│ (TypeScript Types & Proxy)
-▼
-┌────────────────────────────────────────────────────────┐
-│ AWS API Gateway (HTTP/REST) │
-└───────────────────────────┬────────────────────────────┘
-│ (Proxy Route /{proxy+})
-▼
-┌────────────────────────────────────────────────────────┐
-│ AWS Lambda (Ovenless Adapter) │
-├────────────────────────────────────────────────────────┤
-│ ┌───────────────────┐ ┌─────────────┐ ┌───────────┐ │
-│ │ /docs │ │ API Routes │ │ Validator │ │
-│ │ (Scalar Engine) │ │ (Router) │ │ (Zod) │ │
-│ └───────────────────┘ └─────────────┘ └───────────┘ │
-└────────────────────────────────────────────────────────┘
+export const appRouter = createRouter({
+  health: query({
+    output: z.object({
+      status: z.literal("ok"),
+      timestamp: z.string(),
+    }),
+    handler: () => ({
+      status: "ok" as const,
+      timestamp: new Date().toISOString(),
+    }),
+  }),
 
-1. The Core Routing Protocol
+  users: createRouter({
+    getById: query({
+      input: z.object({ id: z.string().min(1) }),
+      output: z.object({
+        id: z.string(),
+        name: z.string(),
+        email: z.string().email(),
+      }),
+      handler: ({ id }) => {
+        const user = users.find((u) => u.id === id);
+        if (!user) throw new Error(`User not found: ${id}`);
+        return user;
+      },
+    }),
 
-At runtime, standard requests are handled through a unified JSON-RPC-like interface over HTTP. Instead of mapping one Lambda to one route, a single core router Lambda handles matching routes dynamically. This prevents cold start penalties across multiple lambdas and consolidates type boundaries.
+    create: mutation({
+      input: z.object({
+        name: z.string().min(1),
+        email: z.string().email(),
+      }),
+      output: z.object({
+        id: z.string(),
+        name: z.string(),
+        email: z.string().email(),
+      }),
+      handler: (input) => {
+        const user = { id: String(users.length + 1), ...input };
+        users.push(user);
+        return user;
+      },
+    }),
+  }),
+});
 
-Query Operations: Handled via GET (or POST) with query parameter parsing.
+export type AppRouter = typeof appRouter;
+```
 
-Mutation Operations: Handled via POST with JSON payload verification.
+### 3. Add config
 
-2. Auto-Doc Engine (Zod ⇄ OpenAPI ⇄ Scalar)
+`ovenless.config.ts`:
 
-To generate documentation without duplicate effort, Ovenless relies on runtime schema inspection:
+```typescript
+import { defineConfig } from "ovenless";
+import { appRouter } from "./src/router.ts";
 
-Procedures are defined with Zod input/output schemas.
+export default defineConfig({
+  router: appRouter,
+  service: "my-api",
+  title: "My API",
+  version: "1.0.0",
+  port: 3000,
+  aws: {
+    region: "us-east-1",
+    runtime: "nodejs20.x",
+    stage: "dev",
+  },
+});
+```
 
-The framework uses @asteasolutions/zod-to-openapi (or a lightweight equivalent) to build an OpenAPI v3 JSON tree in memory.
+### 4. Run locally
 
-When a request hits GET /docs, the serverless adapter converts the JSON tree into a base64 payload and serves Scalar's CDN-powered web dashboard directly as a raw HTML response.
+```bash
+bunx ovenless start
+# or with file watching:
+bunx ovenless start --watch
+```
 
-3. The Pure Type-Inference Client
+Example startup output:
 
-The frontend client requires zero build steps or code generation. By importing only the TypeScript type representation of the backend router:
+```text
+  ▲ Ovenless start  ·  development
+  - Environments: .env, .env.development, .env.local
+  - Variables: 4 from env files (+ OVENLESS_PROFILE)
 
-The client creates a JavaScript Proxy instance.
+  Ovenless development  →  http://localhost:3000
 
-Property chaining (e.g., client.users.getById(...)) is intercepted at runtime and translated into network fetches (POST /users.getById).
+  API       http://localhost:3000/
+  Docs      http://localhost:3000/docs
+  OpenAPI   http://localhost:3000/openapi.json
+```
 
-TypeScript maps the procedure's input/output schemas directly onto the proxy, enabling perfect autocomplete and type validation inside modern editors (VS Code, Cursor, etc.).
+### 5. Call procedures over HTTP
 
-📦 Project Directory Structure
+```bash
+# Health (no input)
+curl -s -X POST http://localhost:3000/health | jq
 
-We will organize the repository to allow clean publishing of our core adapters and client library, while providing an easy setup for Serverless v3 deployments.
+# Query with JSON body
+curl -s -X POST http://localhost:3000/users/getById \
+  -H "Content-Type: application/json" \
+  -d '{"id":"1"}' | jq
 
-/
-├── serverless.yml # Serverless Framework v3 configuration
-├── tsconfig.json # Shared compiler options for TypeScript
-├── package.json # Monorepo dependencies and workspaces
-│
-├── src/ # Example application using the framework
-│ ├── index.ts # Lambda entry point (exports handler)
-│ ├── router.ts # API router holding procedure definitions
-│ └── services/ # Domain logic (DB queries, third-party APIs)
-│
-└── framework/ # The Ovenless Core SDK
-├── index.ts # Main framework exports (router builders)
-├── core.ts # TypeScript definition schemas & builders
-├── client.ts # Proxy client builder (utilized by frontend)
-├── adapters/
-│ └── aws.ts # AWS Lambda APIGateway proxy event adapter
-└── docs/
-└── openapi.ts # Zod schemas compiler to OpenAPI standard
+# Query via GET + query string (values are strings — use z.coerce in schemas)
+curl -s "http://localhost:3000/users/getById?id=2" | jq
 
-🚀 Key Milestones & Roadmap
+# Mutation
+curl -s -X POST http://localhost:3000/users/create \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Charlie","email":"charlie@example.com"}' | jq
+```
 
-Phase 1: Core Type-System & Router Builders
+Paths accept **slashes** (`/users/getById`) or **dots** (`/users.getById`).
 
-Implement type-safe router structures supporting mutations, queries, and contextual middleware.
+---
 
-Set up runtime validation bindings using zod.
+## Type-safe client
 
-Phase 2: AWS Lambda Adapter
+Install the client entry (same package, separate export):
 
-Build the catch-all event parser handling pathing, HTTP methods, headers, and CORS configurations.
+```bash
+bun add ovenless
+```
 
-Wire validation errors back as structural JSON errors.
+`src/client.ts` (frontend or monorepo app):
 
-Phase 3: The JS Proxy Client
+```typescript
+import { createClient, OvenlessClientError } from "ovenless/client";
+import type { AppRouter } from "./router.ts";
+import { appRouter } from "./router.ts";
 
-Build createClient<TRouter>(config) utilizing JavaScript proxies.
+export const api = createClient<AppRouter>({
+  url: process.env.API_URL ?? "http://localhost:3000",
+  router: appRouter, // optional: runtime path checks + GET for void-input queries
+  headers: () => ({
+    Authorization: `Bearer ${getToken()}`,
+  }),
+});
 
-Ensure type mappings allow recursive nesting of routers (client.nested.procedure.query()).
+function getToken(): string {
+  return "";
+}
 
-Phase 4: Schema Translation and Scalar Docs
+// Usage
+async function main() {
+  const health = await api.health();
+  console.log(health.status); // "ok"
 
-Integrate Zod-to-OpenAPI schema generation.
+  const user = await api.users.getById({ id: "1" });
+  console.log(user.name); // "Alice"
 
-Create HTML serialization containing the embedded Scalar script block.
+  const created = await api.users.create({
+    name: "Dana",
+    email: "dana@example.com",
+  });
+  console.log(created.id);
 
-Phase 5: Performance Tuning & Security
+  try {
+    await api.users.getById({ id: "missing" });
+  } catch (err) {
+    if (err instanceof OvenlessClientError) {
+      console.error(err.status, err.message, err.body);
+    }
+  }
+}
+```
 
-Implement response caching, custom context injection (e.g., decoded JWT user properties), and rate-limiting headers.
+Import **only types** on the frontend to avoid bundling server code:
 
-eof
+```typescript
+import type { AppRouter } from "../api/src/router.ts";
+import { createClient } from "ovenless/client";
 
-I have successfully updated the project context to reflect **Ovenless**!
+const api = createClient<AppRouter>({
+  url: import.meta.env.VITE_API_URL,
+});
+```
 
-Would you like to start building out **Phase 1** next by writing the core type-system and router builders in `framework/core.ts`?
+Optional: emit client types for publishing (`tsconfig.client.json` in your app):
+
+```bash
+bunx ovenless build:client
+```
+
+---
+
+## Procedures
+
+### Queries
+
+Read-only operations. Allowed methods: **GET** or **POST**.
+
+```typescript
+// No input
+health: query({
+  output: z.object({ ok: z.boolean() }),
+  handler: () => ({ ok: true }),
+}),
+
+// With input
+list: query({
+  input: z.object({
+    limit: z.coerce.number().optional().default(10),
+  }),
+  output: z.object({ items: z.array(z.string()) }),
+  handler: ({ limit }) => ({ items: fetchItems(limit) }),
+}),
+```
+
+For **GET** requests, input comes from the query string. All values are strings until Zod coerces them—use `z.coerce.number()`, `z.coerce.boolean()`, etc.
+
+### Mutations
+
+Write operations. Allowed method: **POST** only.
+
+```typescript
+create: mutation({
+  input: z.object({ title: z.string() }),
+  output: z.object({ id: z.string() }),
+  handler: async (input) => {
+    const id = await db.insert(input);
+    return { id };
+  },
+}),
+```
+
+### Nested routers
+
+Group related procedures (maps to `client.users.getById`):
+
+```typescript
+export const appRouter = createRouter({
+  users: createRouter({
+    getById: query({
+      /* ... */
+    }),
+    create: mutation({
+      /* ... */
+    }),
+  }),
+});
+```
+
+---
+
+## Configuration
+
+`ovenless.config.ts` must default-export the result of `defineConfig()`:
+
+| Field         | Required | Description                                                     |
+| ------------- | -------- | --------------------------------------------------------------- |
+| `router`      | yes      | Router from `createRouter()`                                    |
+| `service`     | yes      | Serverless service name                                         |
+| `title`       | no       | OpenAPI title (defaults to `service`)                           |
+| `version`     | no       | OpenAPI version (default `0.1.0` in dev)                        |
+| `port`        | no       | Local dev port (default `3000`, overridden by `PORT`)           |
+| `aws.region`  | no       | AWS region (default `us-east-1` or `AWS_REGION`)                |
+| `aws.runtime` | no       | Lambda runtime (default `nodejs20.x`)                           |
+| `aws.stage`   | no       | Deploy stage (default from profile: `dev` / `staging` / `prod`) |
+
+---
+
+## Environment files
+
+Loaded in order (later overrides earlier), Next.js-style logging on `start` and `build`:
+
+| File                                                    | When                      |
+| ------------------------------------------------------- | ------------------------- |
+| `.env`                                                  | Always                    |
+| `.env.development` / `.env.staging` / `.env.production` | Matching `--profile`      |
+| `.env.local`                                            | Always (highest priority) |
+
+```bash
+# .env
+LOG_LEVEL=info
+
+# .env.development
+API_URL=http://localhost:3000
+
+# .env.local (gitignored)
+DATABASE_URL=postgres://localhost:5432/dev
+```
+
+`ovenless start` defaults to profile **development**.  
+`ovenless build` defaults to profile **production** unless you pass `--profile`.
+
+```bash
+bunx ovenless start --profile staging
+bunx ovenless build --profile staging
+```
+
+---
+
+## CLI
+
+| Command                        | Description                                        |
+| ------------------------------ | -------------------------------------------------- |
+| `ovenless start`               | Local Bun HTTP server                              |
+| `ovenless start --watch`       | Restart on file changes                            |
+| `ovenless start --profile <p>` | Load `.env.<p>`                                    |
+| `ovenless build --profile <p>` | Bundle Lambda + write `serverless.yml`             |
+| `ovenless build:client`        | Emit client `.d.ts` (needs `tsconfig.client.json`) |
+| `ovenless certs`               | Generate RSA PEM keys for JWT signing (RS256)      |
+| `ovenless help`                | Show usage                                         |
+
+### JWT signing keys (`ovenless certs`)
+
+Cross-platform (no `ssh-keygen` / `openssl` required). Writes keys under `cert/<profile>/`:
+
+```bash
+bunx ovenless certs --profile development
+bunx ovenless certs --profile staging --comment "my-api staging"
+bunx ovenless certs --profile production --force   # overwrite existing keys
+```
+
+Output layout:
+
+```text
+cert/
+├── development/
+│   ├── id_rsa       # private key (PEM PKCS#1, mode 600)
+│   └── id_rsa.pub   # public key (PEM)
+├── staging/
+└── production/
+```
+
+Use in your app (example with `jose` or `jsonwebtoken`):
+
+```typescript
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const profile = process.env.OVENLESS_PROFILE ?? "development";
+const privateKey = readFileSync(join("cert", profile, "id_rsa"), "utf8");
+const publicKey = readFileSync(join("cert", profile, "id_rsa.pub"), "utf8");
+```
+
+Add `cert/` to `.gitignore`.
+
+---
+
+## Deploy to AWS
+
+### 1. Build for the target profile
+
+```bash
+bunx ovenless build --profile production
+```
+
+Outputs:
+
+- `dist/handler.js` — CommonJS bundle, export `awsHandler`
+- `serverless.yml` — generated Serverless Framework v3 config
+
+Generated `serverless.yml` (excerpt):
+
+```yaml
+service: my-api
+frameworkVersion: "3"
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-1
+  stage: prod
+functions:
+  api:
+    handler: dist/handler.awsHandler
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
+      - httpApi:
+          path: /
+          method: ANY
+```
+
+### 2. Deploy with Serverless
+
+```bash
+npm i -g serverless
+serverless deploy --stage prod
+```
+
+### 3. Custom Lambda entry (advanced)
+
+If you hand-roll the handler instead of `ovenless build`:
+
+```typescript
+import { createAwsHandler } from "ovenless";
+import config from "./ovenless.config.ts";
+
+export const handler = createAwsHandler(config.router, {
+  title: config.title ?? config.service,
+  version: config.version ?? "1.0.0",
+});
+```
+
+---
+
+## HTTP API
+
+### Built-in routes
+
+| Method    | Path            | Description                      |
+| --------- | --------------- | -------------------------------- |
+| `GET`     | `/`             | API metadata + procedure list    |
+| `GET`     | `/docs`         | Scalar interactive documentation |
+| `GET`     | `/openapi.json` | OpenAPI 3.0 document             |
+| `OPTIONS` | `*`             | CORS preflight                   |
+
+### Procedure routes
+
+| Type     | Methods       | Body                                  |
+| -------- | ------------- | ------------------------------------- |
+| Query    | `GET`, `POST` | GET: query string · POST: JSON object |
+| Mutation | `POST`        | JSON object                           |
+
+### Success response
+
+JSON body = validated procedure **output** schema.
+
+### Error response
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Input validation failed",
+    "details": []
+  }
+}
+```
+
+| Code                 | HTTP | Meaning                                   |
+| -------------------- | ---- | ----------------------------------------- |
+| `NOT_FOUND`          | 404  | Unknown procedure path                    |
+| `METHOD_NOT_ALLOWED` | 405  | Wrong HTTP method                         |
+| `INVALID_BODY`       | 400  | Body not a JSON object                    |
+| `INVALID_JSON`       | 400  | Malformed JSON (dev server)               |
+| `VALIDATION_ERROR`   | 400  | Zod input/output validation failed        |
+| `INTERNAL_ERROR`     | 500  | Handler threw (message hidden by default) |
+
+Production 500 responses use a generic message. Enable details only in development:
+
+```typescript
+createHandler(router, {
+  exposeErrorDetails: process.env.NODE_ENV !== "production",
+});
+```
+
+---
+
+## Architecture
+
+```text
+┌──────────────┐     types only      ┌─────────────────┐
+│   Frontend   │ ◄────────────────── │  appRouter      │
+│ createClient │      fetch/POST     │  (Zod + TS)     │
+└──────┬───────┘                     └────────┬────────┘
+       │                                        │
+       │  POST /users.getById                   │ createHandler
+       ▼                                        ▼
+┌──────────────────────────────────────────────────────────┐
+│  Bun dev server  ·  or  AWS API Gateway HTTP API         │
+│                     └─► Lambda (awsHandler)              │
+│                           ├─ Zod input parse             │
+│                           ├─ procedure.handler()         │
+│                           ├─ Zod output parse            │
+│                           └─ /docs · /openapi.json       │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Package exports
+
+| Import            | Use                                                          |
+| ----------------- | ------------------------------------------------------------ |
+| `ovenless`        | Router, handler, AWS adapter, config, CLI                    |
+| `ovenless/client` | `createClient`, client types (`InferClient`, `AppClient`, …) |
+
+---
+
+## Programmatic usage
+
+Standalone HTTP handler (tests, custom servers):
+
+```typescript
+import { createHandler } from "ovenless";
+import { appRouter } from "./src/router.ts";
+
+const handle = createHandler(appRouter, {
+  title: "My API",
+  version: "1.0.0",
+  cors: true,
+});
+
+const res = await handle({
+  method: "POST",
+  path: "/health",
+  body: {},
+});
+
+console.log(res.statusCode, res.body);
+```
+
+---
+
+## Project layout (reference app)
+
+```text
+my-api/
+├── ovenless.config.ts    # defineConfig({ router, service, ... })
+├── serverless.yml        # generated by ovenless build
+├── package.json
+├── .env
+├── .env.development
+├── .env.local
+├── src/
+│   └── router.ts         # appRouter + export type AppRouter
+└── dist/
+    └── handler.js        # Lambda bundle (after build)
+```
+
+---
+
+## Scripts (developing Ovenless itself)
+
+```bash
+bun run build      # bundle dist/
+bun test           # run test suite
+bun run typecheck  # tsc --noEmit
+```
+
+---
+
+## Roadmap
+
+- [ ] Middleware and request context (auth, logging)
+- [ ] Subscription / streaming procedures
+- [ ] First-party project scaffold (`create-ovenless`)
+
+---
+
+## License
+
+MIT © [G.B.Mungunshagai](https://github.com/gbmungunshagai-png/ovenless)
