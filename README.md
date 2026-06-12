@@ -385,6 +385,119 @@ Add `cert/` to `.gitignore`.
 
 ---
 
+## JWT authentication (built-in)
+
+Enable auth on the router (not per-procedure). All routes are protected unless marked `meta: { public: true }` or listed in `auth.public`.
+
+```bash
+bunx ovenless certs --profile development
+```
+
+```typescript
+import { z } from "zod";
+import { createRouter, mutation, query } from "ovenless";
+
+const claimsSchema = z.object({ role: z.enum(["user", "admin"]) });
+
+export const appRouter = createRouter(
+  {
+    health: query({
+      meta: { public: true },
+      output: z.object({ ok: z.boolean() }),
+      handler: () => ({ ok: true }),
+    }),
+
+    login: mutation({
+      meta: { public: true },
+      input: z.object({ userId: z.string() }),
+      output: z.object({ ok: z.literal(true) }),
+      handler: async ({ userId, auth }) => {
+        await auth.sign({
+          principalId: userId,
+          claims: { role: "user" },
+        });
+        return { ok: true };
+      },
+    }),
+
+    me: query({
+      output: z.object({ principalId: z.string(), role: z.string() }),
+      handler: ({ principalId, claims }) => ({
+        principalId,
+        role: claims.role,
+      }),
+    }),
+  },
+  {
+    auth: {
+      mode: "bearer", // or "cookie"
+      ttl: "7d", // "10m", "1h", or seconds
+      claims: claimsSchema,
+      autoRotate: true, // cookie mode: refresh Set-Cookie when near expiry
+      public: ["health", "login"],
+      authorizer: true, // generate Lambda REQUEST authorizer on build
+      cookie: { name: "ovenless_token", secure: true, sameSite: "lax" },
+    },
+  },
+);
+```
+
+### Handler context
+
+When `auth` is enabled, handlers receive **one merged object**: validated input fields (spread), plus `input` (the full parsed body), plus auth fields.
+
+```typescript
+// Destructure input fields and auth together
+handler: ({ limit, principalId, claims }) => { ... }
+
+// Or use the nested `input` alias
+handler: ({ input, principalId }) => createUser(input)
+```
+
+| Field | Description |
+|-------|-------------|
+| `…input fields` | Spread from the procedure `input` schema |
+| `input` | Full parsed input object (same fields as spread) |
+| `principalId` | JWT `sub` (Serverless `principalId` compatible) |
+| `claims` | Typed from `auth.claims` Zod schema |
+| `auth.sign` | Issue JWT (`Set-Cookie` automatically in cookie mode) |
+| `auth.setCookie` / `auth.clearCookie` | Cookie helpers |
+
+### Client
+
+```typescript
+import { createClient, setClientBearerToken } from "ovenless/client";
+
+const api = createClient<AppRouter>({
+  url: "http://localhost:3000",
+  auth: { mode: "bearer" },
+});
+
+await api.login({ userId: "alice" });
+// After login, set token from your app logic or use cookie mode:
+const apiCookie = createClient<AppRouter>({
+  url: "http://localhost:3000",
+  auth: { mode: "cookie" },
+});
+```
+
+```typescript
+setClientBearerToken("eyJhbG...");
+await api.me();
+```
+
+### Lambda authorizer
+
+When `auth.authorizer: true`, `ovenless build` emits `dist/authorizer.js` and wires HTTP API `ovenlessJwt` in `serverless.yml`. The main handler still validates JWT in-process; API Gateway can reject invalid tokens earlier.
+
+```typescript
+import { createJwtAuthorizer } from "ovenless";
+
+export const jwtAuthorizer = createJwtAuthorizer({ auth: appRouter.auth! });
+```
+
+---
+
 ## Deploy to AWS
 
 ### 1. Build for the target profile

@@ -65,6 +65,24 @@ function buildQueryString(
   return `?${new URLSearchParams(entries).toString()}`;
 }
 
+function extractAuthorizerContext(
+  event: APIGatewayProxyEvent,
+): import("../handler.ts").HttpRequest["auth"] {
+  const authorizer = event.requestContext?.authorizer as
+    | Record<string, string | undefined>
+    | undefined;
+
+  if (!authorizer) return undefined;
+
+  const principalId = authorizer.principalId ?? authorizer.userId;
+  if (!principalId) return undefined;
+
+  return {
+    principalId,
+    claims: authorizer.claims,
+  };
+}
+
 export function createAwsHandler(router: Router, options: OvenlessHandlerOptions = {}) {
   const handler = createHandler(router, options);
 
@@ -74,12 +92,14 @@ export function createAwsHandler(router: Router, options: OvenlessHandlerOptions
   ): Promise<APIGatewayProxyResult> => {
     const path = buildPath(event);
     const query = buildQueryString(event.queryStringParameters);
+    const gatewayAuth = extractAuthorizerContext(event);
 
     const response = await handler({
       method: event.httpMethod,
       path: `${path}${query}`,
       body: parseBody(event),
       headers: event.headers as Record<string, string | undefined>,
+      auth: gatewayAuth,
     });
 
     return toApiGatewayResult(response);

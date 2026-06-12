@@ -1,5 +1,17 @@
 import type { ZodType } from "zod";
 import { z } from "zod";
+import type { ResolvedAuthConfig, RouterAuthConfig } from "./auth/context.ts";
+import { resolveAuthConfig } from "./auth/context.ts";
+import type {
+  ProcedureMeta,
+  ProtectedHandler,
+  ProtectedHandlerNoInput,
+  PublicHandler,
+  PublicHandlerNoInput,
+  VoidPublicHandler,
+} from "./auth/router-types.ts";
+
+export type { ProcedureMeta } from "./auth/router-types.ts";
 
 export const PROCEDURE_MARKER = Symbol.for("ovenless.procedure");
 
@@ -13,9 +25,11 @@ export interface Procedure<
   type: ProcedureType;
   input: TInput;
   output: TOutput;
-  handler: (input: z.infer<TInput>) => Promise<z.infer<TOutput>> | z.infer<TOutput>;
+  handler: (input: unknown) => Promise<z.infer<TOutput>> | z.infer<TOutput>;
   /** Set when the procedure accepts no client input */
   __voidInput?: true;
+  meta?: ProcedureMeta;
+  __public?: boolean;
 }
 
 export type RouterRecord = Record<string, Procedure | Router>;
@@ -23,9 +37,16 @@ export type RouterRecord = Record<string, Procedure | Router>;
 export interface Router<T extends RouterRecord = RouterRecord> {
   [ROUTER_MARKER]: true;
   procedures: T;
+  auth?: ResolvedAuthConfig;
 }
 
 export const ROUTER_MARKER = Symbol.for("ovenless.router");
+
+export interface CreateRouterOptions {
+  auth?: RouterAuthConfig;
+  profile?: import("./config.ts").OvenlessProfile;
+  certDir?: string;
+}
 
 /** Default schema for procedures with no input */
 export const voidInput = z.object({});
@@ -104,88 +125,206 @@ export function isRouter(value: unknown): value is Router {
   );
 }
 
-type QueryNoInput<TOutput extends ZodType> = {
+function buildProcedure(
+  type: ProcedureType,
+  config: {
+    input?: ZodType;
+    output: ZodType;
+    handler: (...args: unknown[]) => unknown;
+    meta?: ProcedureMeta;
+    __voidInput?: boolean;
+  },
+): Procedure {
+  const isPublic = config.meta?.public === true;
+  const proc: Procedure = {
+    [PROCEDURE_MARKER]: true,
+    type,
+    input: config.input ?? voidInput,
+    output: config.output,
+    handler: config.handler as Procedure["handler"],
+    meta: config.meta,
+    __public: isPublic,
+    ...(config.__voidInput ? { __voidInput: true as const } : {}),
+  };
+  return proc;
+}
+
+type ProcedureConfigBase = {
+  meta?: ProcedureMeta;
+};
+
+// --- Query overloads (no auth / public) ---
+
+type QueryNoInputPublic<TOutput extends ZodType> = ProcedureConfigBase & {
+  meta: { public: true };
+  input?: never;
+  output: TOutput;
+  handler: VoidPublicHandler<TOutput> | PublicHandlerNoInput<TOutput>;
+};
+
+type QueryWithInputPublic<TInput extends ZodType, TOutput extends ZodType> = ProcedureConfigBase & {
+  meta: { public: true };
+  input: TInput;
+  output: TOutput;
+  handler: PublicHandler<z.infer<TInput>, z.infer<TOutput>>;
+};
+
+type QueryNoInputProtected<TOutput extends ZodType, TClaims extends ZodType | undefined> = {
+  meta?: { public?: false };
+  input?: never;
+  output: TOutput;
+  handler: ProtectedHandlerNoInput<TOutput, TClaims>;
+};
+
+type QueryWithInputProtected<
+  TInput extends ZodType,
+  TOutput extends ZodType,
+  TClaims extends ZodType | undefined,
+> = {
+  meta?: { public?: false };
+  input: TInput;
+  output: TOutput;
+  handler: ProtectedHandler<z.infer<TInput>, z.infer<TOutput>, TClaims>;
+};
+
+type QueryNoInputPlain<TOutput extends ZodType> = ProcedureConfigBase & {
   input?: never;
   output: TOutput;
   handler: () => MaybePromise<z.infer<TOutput>>;
 };
 
-type QueryWithInput<TInput extends ZodType, TOutput extends ZodType> = {
+type QueryWithInputPlain<TInput extends ZodType, TOutput extends ZodType> = ProcedureConfigBase & {
   input: TInput;
   output: TOutput;
   handler: (input: z.infer<TInput>) => MaybePromise<z.infer<TOutput>>;
 };
 
-export function query<TOutput extends ZodType>(
-  config: QueryNoInput<TOutput>,
-): VoidInputProcedure<TOutput>;
+/** Void output with auth context (protected) */
+type QueryVoidAuth<
+  TOutput extends ZodType,
+  TClaims extends ZodType | undefined = undefined,
+> = ProcedureConfigBase & {
+  input?: never;
+  output: TOutput;
+  handler: ProtectedHandlerNoInput<TOutput, TClaims>;
+};
+
+/** Input + auth context (protected) */
+type QueryWithInputAuth<
+  TInput extends ZodType,
+  TOutput extends ZodType,
+  TClaims extends ZodType | undefined = undefined,
+> = ProcedureConfigBase & {
+  input: TInput;
+  output: TOutput;
+  handler: ProtectedHandler<z.infer<TInput>, z.infer<TOutput>, TClaims>;
+};
+
+export function query<TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
 export function query<TInput extends ZodType, TOutput extends ZodType>(
-  config: QueryWithInput<TInput, TOutput>,
+  config: QueryWithInputPlain<TInput, TOutput>,
+): Procedure<TInput, TOutput>;
+export function query<TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
+export function query<TInput extends ZodType, TOutput extends ZodType>(
+  config: QueryWithInputPublic<TInput, TOutput>,
 ): Procedure<TInput, TOutput>;
 export function query(
-  config: QueryNoInput<ZodType> | QueryWithInput<ZodType, ZodType>,
+  config:
+    | QueryNoInputPlain<ZodType>
+    | QueryWithInputPlain<ZodType, ZodType>
+    | QueryVoidAuth<ZodType, ZodType | undefined>
+    | QueryWithInputAuth<ZodType, ZodType, ZodType | undefined>
+    | QueryNoInputPublic<ZodType>
+    | QueryWithInputPublic<ZodType, ZodType>,
 ): Procedure<ZodType, ZodType> | VoidInputProcedure {
   if ("input" in config && config.input != null) {
-    const withInput = config as QueryWithInput<ZodType, ZodType>;
-    return {
-      [PROCEDURE_MARKER]: true,
-      type: "query",
+    const withInput = config as QueryWithInputPlain<ZodType, ZodType>;
+    return buildProcedure("query", {
       input: withInput.input,
       output: withInput.output,
-      handler: withInput.handler,
-    };
+      handler: withInput.handler as (...args: unknown[]) => unknown,
+      meta: config.meta,
+    });
   }
 
-  const withoutInput = config as QueryNoInput<ZodType>;
-  return {
-    [PROCEDURE_MARKER]: true,
-    type: "query",
-    input: voidInput,
+  const withoutInput = config as QueryNoInputPlain<ZodType>;
+
+  return buildProcedure("query", {
     output: withoutInput.output,
-    handler: () => withoutInput.handler(),
+    meta: config.meta,
     __voidInput: true,
-  };
+    handler: withoutInput.handler as (...args: unknown[]) => unknown,
+  }) as VoidInputProcedure;
 }
 
-type MutationNoInput<TOutput extends ZodType> = QueryNoInput<TOutput>;
-type MutationWithInput<TInput extends ZodType, TOutput extends ZodType> = QueryWithInput<TInput, TOutput>;
-
-export function mutation<TOutput extends ZodType>(
-  config: MutationNoInput<TOutput>,
-): VoidInputProcedure<TOutput>;
+export function mutation<TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
 export function mutation<TInput extends ZodType, TOutput extends ZodType>(
-  config: MutationWithInput<TInput, TOutput>,
+  config: QueryWithInputPlain<TInput, TOutput>,
+): Procedure<TInput, TOutput>;
+export function mutation<TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
+export function mutation<TInput extends ZodType, TOutput extends ZodType>(
+  config: QueryWithInputPublic<TInput, TOutput>,
 ): Procedure<TInput, TOutput>;
 export function mutation(
-  config: MutationNoInput<ZodType> | MutationWithInput<ZodType, ZodType>,
+  config:
+    | QueryNoInputPlain<ZodType>
+    | QueryWithInputPlain<ZodType, ZodType>
+    | QueryVoidAuth<ZodType, ZodType | undefined>
+    | QueryWithInputAuth<ZodType, ZodType, ZodType | undefined>
+    | QueryNoInputPublic<ZodType>
+    | QueryWithInputPublic<ZodType, ZodType>,
 ): Procedure<ZodType, ZodType> | VoidInputProcedure {
   if ("input" in config && config.input != null) {
-    const withInput = config as MutationWithInput<ZodType, ZodType>;
-    return {
-      [PROCEDURE_MARKER]: true,
-      type: "mutation",
+    const withInput = config as QueryWithInputPlain<ZodType, ZodType>;
+    return buildProcedure("mutation", {
       input: withInput.input,
       output: withInput.output,
-      handler: withInput.handler,
-    };
+      handler: withInput.handler as (...args: unknown[]) => unknown,
+      meta: config.meta,
+    });
   }
 
-  const withoutInput = config as MutationNoInput<ZodType>;
-  return {
-    [PROCEDURE_MARKER]: true,
-    type: "mutation",
-    input: voidInput,
+  const withoutInput = config as QueryNoInputPlain<ZodType>;
+
+  return buildProcedure("mutation", {
     output: withoutInput.output,
-    handler: () => withoutInput.handler(),
+    meta: config.meta,
     __voidInput: true,
-  };
+    handler: withoutInput.handler as (...args: unknown[]) => unknown,
+  }) as VoidInputProcedure;
 }
 
-export function createRouter<T extends RouterRecord>(procedures: T): Router<T> {
-  return {
+function inheritAuthOnTree(node: RouterRecord, auth: ResolvedAuthConfig): void {
+  for (const value of Object.values(node)) {
+    if (isRouter(value)) {
+      if (!value.auth) value.auth = auth;
+      inheritAuthOnTree(value.procedures, auth);
+    }
+  }
+}
+
+export function createRouter<T extends RouterRecord>(
+  procedures: T,
+  options?: CreateRouterOptions,
+): Router<T> {
+  const router: Router<T> = {
     [ROUTER_MARKER]: true,
     procedures,
   };
+
+  if (options?.auth) {
+    router.auth = resolveAuthConfig(options.auth, {
+      profile: options.profile,
+      certDir: options.certDir,
+    });
+    inheritAuthOnTree(procedures, router.auth);
+  }
+
+  return router;
+}
+
+export function getRouterAuth(router: Router): ResolvedAuthConfig | undefined {
+  return router.auth;
 }
 
 export type InferProcedureInput<T> = T extends Procedure<infer I, ZodType>
@@ -216,6 +355,7 @@ export function resolveProcedure(
   pathSegments: string[],
 ): ResolvedProcedure | null {
   let current: RouterRecord = router.procedures;
+  let rootAuth = router.auth;
 
   for (let i = 0; i < pathSegments.length; i++) {
     const segment = pathSegments[i];
@@ -233,6 +373,7 @@ export function resolveProcedure(
     if (isRouter(node)) {
       if (isLast) return null;
       current = node.procedures;
+      if (node.auth) rootAuth = node.auth;
       continue;
     }
 

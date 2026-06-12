@@ -1,3 +1,5 @@
+import { assertJwtKeysExist } from "../auth/keys.ts";
+import { getRouterAuth } from "../core.ts";
 import { createHandler } from "../handler.ts";
 import type { OvenlessProfile } from "../config.ts";
 import { applyEnv, loadProfileEnv, logLoadedEnvironments } from "./env.ts";
@@ -27,6 +29,11 @@ export async function runDevServer(profile: OvenlessProfile): Promise<void> {
   logLoadedEnvironments(loaded, "start");
   applyEnv(loaded.env, true);
   const config = await loadConfig();
+
+  const routerAuth = getRouterAuth(config.router);
+  if (routerAuth) {
+    assertJwtKeysExist(routerAuth.profile, process.cwd(), routerAuth.certDir);
+  }
 
   const handler = createHandler(config.router, {
     title: config.title ?? config.service,

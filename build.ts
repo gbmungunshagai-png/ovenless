@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 const root = import.meta.dir;
 const dist = join(root, "dist");
 
-const external = ["zod", "@asteasolutions/zod-to-openapi", "typescript"];
+const external = ["zod", "@asteasolutions/zod-to-openapi", "typescript", "jose"];
 
 async function bundle(): Promise<void> {
   const staging = join(dist, ".bundle");

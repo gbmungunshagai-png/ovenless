@@ -1,6 +1,7 @@
 import { ZodError } from "zod";
 import {
   collectProcedures,
+  getRouterAuth,
   isProcedure,
   isRouter,
   parseProcedurePath,
@@ -8,7 +9,22 @@ import {
   resolveProcedure,
   type Router,
 } from "./core.ts";
+import type { AuthContext, PublicAuthContext } from "./auth/context.ts";
+import {
+  mergeProtectedContext,
+  mergePublicContext,
+} from "./auth/context.ts";
+import {
+  buildHandlerContext,
+  createAuthMiddlewareState,
+  isPublicProcedurePath,
+  maybeRotateCookie,
+  mergeResponseAuthHeaders,
+  resolveRequestAuth,
+  UnauthorizedError,
+} from "./auth/middleware.ts";
 import { generateOpenApiDocument, renderScalarHtml } from "./docs/openapi.ts";
+import type { HttpRequestAuth } from "./auth/context.ts";
 
 export type HttpMethod = "GET" | "POST" | "OPTIONS" | "HEAD";
 
@@ -17,6 +33,8 @@ export interface HttpRequest {
   path: string;
   body?: unknown;
   headers?: Record<string, string | undefined>;
+  /** Populated by AWS adapter from API Gateway authorizer context */
+  auth?: HttpRequestAuth;
 }
 
 export interface HttpResponse {
@@ -31,6 +49,8 @@ export interface OvenlessHandlerOptions {
   cors?: boolean;
   /** When false (default), 500 responses omit handler error text */
   exposeErrorDetails?: boolean;
+  /** Project root for cert/<profile> resolution */
+  root?: string;
 }
 
 const ALLOWED_METHODS = new Set<HttpMethod>(["GET", "POST", "OPTIONS", "HEAD"]);
@@ -56,12 +76,23 @@ export function getHeader(
   return undefined;
 }
 
-function corsHeaders(origin?: string): Record<string, string> {
-  return {
-    "Access-Control-Allow-Origin": origin ?? "*",
+function corsHeaders(
+  origin: string | undefined,
+  authMode?: "bearer" | "cookie",
+): Record<string, string> {
+  const headers: Record<string, string> = {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   };
+
+  if (authMode === "cookie" && origin) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers["Access-Control-Allow-Credentials"] = "true";
+  } else {
+    headers["Access-Control-Allow-Origin"] = origin ?? "*";
+  }
+
+  return headers;
 }
 
 export class BodyValidationError extends Error {
@@ -163,17 +194,40 @@ export function normalizeRawInput(method: string, path: string, body: unknown): 
   return body;
 }
 
+function parseGatewayClaims(request: HttpRequest): {
+  principalId?: string;
+  claims?: Record<string, unknown>;
+} | undefined {
+  const auth = request.auth;
+  if (!auth?.principalId) return undefined;
+
+  let claims: Record<string, unknown> = {};
+  if (auth.claims) {
+    try {
+      claims = JSON.parse(auth.claims) as Record<string, unknown>;
+    } catch {
+      claims = {};
+    }
+  }
+
+  return { principalId: auth.principalId, claims };
+}
+
 export function createHandler(router: Router, options: OvenlessHandlerOptions = {}) {
   const {
     title = "Ovenless API",
     version = "1.0.0",
     cors = true,
     exposeErrorDetails = false,
+    root = process.cwd(),
   } = options;
 
+  const auth = getRouterAuth(router);
+
   return async (request: HttpRequest): Promise<HttpResponse> => {
+    const authState = createAuthMiddlewareState();
     const origin = getHeader(request.headers, "Origin");
-    const corsHdrs = cors ? corsHeaders(origin) : {};
+    const corsHdrs = cors ? corsHeaders(origin, auth?.mode) : {};
     const method = (request.method ?? "").trim().toUpperCase();
 
     if (!ALLOWED_METHODS.has(method as HttpMethod)) {
@@ -213,6 +267,7 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
           procedures: procedures.map((p) => ({
             path: p.path,
             type: p.procedure.type,
+            public: p.procedure.__public === true,
           })),
         },
         corsHdrs,
@@ -231,6 +286,7 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
     }
 
     const { procedure } = resolved;
+    const isPublic = isPublicProcedurePath(auth, resolved.path, procedure.__public);
 
     if (procedure.type === "mutation" && method !== "POST") {
       return errorResponse(
@@ -250,6 +306,20 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
         undefined,
         corsHdrs,
       );
+    }
+
+    let requestAuth: Awaited<ReturnType<typeof resolveRequestAuth>> | undefined;
+
+    if (auth && !isPublic) {
+      try {
+        const gateway = parseGatewayClaims(request);
+        requestAuth = await resolveRequestAuth(request, auth, root, gateway);
+      } catch (err) {
+        if (err instanceof UnauthorizedError) {
+          return errorResponse(401, "UNAUTHORIZED", err.message, undefined, corsHdrs);
+        }
+        throw err;
+      }
     }
 
     let rawInput: unknown;
@@ -279,9 +349,43 @@ export function createHandler(router: Router, options: OvenlessHandlerOptions = 
     }
 
     try {
-      const result = await procedure.handler(input);
+      let result: unknown;
+
+      if (auth) {
+        const authCtx = await buildHandlerContext(auth, root, authState, requestAuth);
+        const inputObj =
+          typeof input === "object" && input !== null && !Array.isArray(input)
+            ? (input as Record<string, unknown>)
+            : {};
+
+        if (isPublic) {
+          const merged = mergePublicContext(
+            inputObj,
+            authCtx as PublicAuthContext,
+          );
+          result = await procedure.handler(merged);
+        } else {
+          const merged = mergeProtectedContext(
+            inputObj,
+            authCtx as AuthContext,
+          );
+          result = await procedure.handler(merged);
+        }
+      } else {
+        result = await procedure.handler(input);
+      }
+
       const output = procedure.output.parse(result);
-      return jsonResponse(200, output, corsHdrs);
+
+      if (auth && requestAuth) {
+        await maybeRotateCookie(auth, authState, requestAuth, root);
+      }
+
+      const response = jsonResponse(200, output, corsHdrs);
+      if (response.headers) {
+        response.headers = mergeResponseAuthHeaders(response.headers, authState);
+      }
+      return response;
     } catch (err) {
       if (err instanceof Error && err.message === "Response is not JSON-serializable") {
         const { message, details } = mapHandlerError(err, exposeErrorDetails);

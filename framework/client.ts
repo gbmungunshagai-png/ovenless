@@ -7,12 +7,28 @@ import {
   type Router,
 } from "./core.ts";
 
+export type ClientAuthMode = "bearer" | "cookie";
+
+export interface ClientAuthOptions {
+  mode: ClientAuthMode;
+  /** Bearer token or async resolver */
+  token?: string | (() => string | undefined);
+}
+
 export interface ClientOptions {
   url: string;
   fetch?: typeof fetch;
   headers?: Record<string, string> | (() => Record<string, string>);
   /** Validates paths at runtime and enables GET for void-input queries */
   router?: Router;
+  auth?: ClientAuthOptions;
+}
+
+let globalBearerToken: string | undefined;
+
+/** Set bearer token for subsequent client requests */
+export function setClientBearerToken(token: string | undefined): void {
+  globalBearerToken = token;
 }
 
 export class OvenlessClientError extends Error {
@@ -54,11 +70,28 @@ export function createClient<TRouter extends Router>(
     }
   }
 
+  const resolveBearerToken = (): string | undefined => {
+    const auth = options.auth;
+    if (!auth || auth.mode !== "bearer") return undefined;
+    if (typeof auth.token === "function") return auth.token() ?? globalBearerToken;
+    return auth.token ?? globalBearerToken;
+  };
+
   const resolveHeaders = (jsonBody: boolean): Record<string, string> => {
     const base: Record<string, string> = jsonBody ? { "Content-Type": "application/json" } : {};
     const extra =
       typeof options.headers === "function" ? options.headers() : (options.headers ?? {});
-    return { ...base, ...extra };
+    const headers = { ...base, ...extra };
+    const token = resolveBearerToken();
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
+  const fetchCredentials = (): "include" | undefined => {
+    if (options.auth?.mode === "cookie") return "include";
+    return undefined;
   };
 
   const callProcedure = async (path: string, input: unknown): Promise<unknown> => {
@@ -75,14 +108,20 @@ export function createClient<TRouter extends Router>(
       meta?.type === "query" && meta.voidInput && isEmptyClientInput(input);
 
     const url = `${baseUrl}/${path}`;
+    const credentials = fetchCredentials();
     const response = await httpFetch(
       url,
       useGet
-        ? { method: "GET", headers: resolveHeaders(false) }
+        ? {
+            method: "GET",
+            headers: resolveHeaders(false),
+            credentials,
+          }
         : {
             method: "POST",
             headers: resolveHeaders(true),
             body: JSON.stringify(input ?? {}),
+            credentials,
           },
     );
 

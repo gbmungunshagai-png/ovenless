@@ -15,4 +15,10 @@ export {
   type IsOptionalClientInput,
 } from "./core.ts";
 
-export { createClient, OvenlessClientError, type ClientOptions } from "./client.ts";
+export {
+  createClient,
+  OvenlessClientError,
+  setClientBearerToken,
+  type ClientOptions,
+  type ClientAuthOptions,
+} from "./client.ts";
