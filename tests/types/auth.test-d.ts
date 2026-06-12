@@ -10,7 +10,7 @@ const router = createRouter(
   {
     secret: query({
       output: z.object({ id: z.string() }),
-      handler: (ctx: ProcedureContext<Record<string, never>, typeof claimsSchema>) => {
+      handler: (ctx: ProcedureContext<object, typeof claimsSchema>) => {
         const _principalId: string = ctx.principalId;
         const _role: ExpectedClaims["role"] = ctx.claims.role as ExpectedClaims["role"];
         return { id: ctx.principalId };

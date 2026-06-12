@@ -62,12 +62,12 @@ type RequiredInputKeys<T> = {
 export type IsOptionalClientInput<T> = [T] extends [void]
   ? true
   : undefined extends T
-    ? true
-    : keyof T extends never
-      ? true
-      : RequiredInputKeys<T> extends never
-        ? true
-        : false;
+  ? true
+  : keyof T extends never
+  ? true
+  : RequiredInputKeys<T> extends never
+  ? true
+  : false;
 
 export function isVoidInput(schema: ZodType, procedure?: Procedure): boolean {
   if (procedure?.__voidInput === true) return true;
@@ -93,8 +93,8 @@ export function queryInputFromSearchParams(
 
 export type InferProcedureClient<I extends ZodType, O extends ZodType> =
   IsOptionalClientInput<z.infer<I>> extends true
-    ? (input?: z.infer<I>) => Promise<z.infer<O>>
-    : (input: z.infer<I>) => Promise<z.infer<O>>;
+  ? (input?: z.infer<I>) => Promise<z.infer<O>>
+  : (input: z.infer<I>) => Promise<z.infer<O>>;
 
 export type VoidInputProcedure<TOutput extends ZodType = ZodType> = Procedure<
   typeof voidInput,
@@ -103,8 +103,8 @@ export type VoidInputProcedure<TOutput extends ZodType = ZodType> = Procedure<
 
 export type InferClientProcedure<P> = P extends Procedure<infer I, infer O>
   ? P extends { __voidInput: true }
-    ? () => Promise<z.infer<O>>
-    : InferProcedureClient<I, O>
+  ? () => Promise<z.infer<O>>
+  : InferProcedureClient<I, O>
   : never;
 
 export function isProcedure(value: unknown): value is Procedure {
@@ -173,7 +173,7 @@ type QueryNoInputProtected<TOutput extends ZodType, TClaims extends ZodType | un
   meta?: { public?: false };
   input?: never;
   output: TOutput;
-  handler: ProtectedHandlerNoInput<TOutput, TClaims>;
+  handler: ProtectedHandlerNoInput<z.infer<TOutput>, TClaims>;
 };
 
 type QueryWithInputProtected<
@@ -206,7 +206,7 @@ type QueryVoidAuth<
 > = ProcedureConfigBase & {
   input?: never;
   output: TOutput;
-  handler: ProtectedHandlerNoInput<TOutput, TClaims>;
+  handler: ProtectedHandlerNoInput<z.infer<TOutput>, TClaims>;
 };
 
 /** Input + auth context (protected) */
@@ -220,13 +220,19 @@ type QueryWithInputAuth<
   handler: ProtectedHandler<z.infer<TInput>, z.infer<TOutput>, TClaims>;
 };
 
-export function query<TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
-export function query<TInput extends ZodType, TOutput extends ZodType>(
-  config: QueryWithInputPlain<TInput, TOutput>,
-): Procedure<TInput, TOutput>;
 export function query<TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
 export function query<TInput extends ZodType, TOutput extends ZodType>(
   config: QueryWithInputPublic<TInput, TOutput>,
+): Procedure<TInput, TOutput>;
+export function query<TOutput extends ZodType, TClaims extends ZodType | undefined = undefined>(
+  config: QueryNoInputProtected<TOutput, TClaims>,
+): VoidInputProcedure<TOutput>;
+export function query<TInput extends ZodType, TOutput extends ZodType, TClaims extends ZodType | undefined = undefined>(
+  config: QueryWithInputProtected<TInput, TOutput, TClaims>,
+): Procedure<TInput, TOutput>;
+export function query<TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
+export function query<TInput extends ZodType, TOutput extends ZodType>(
+  config: QueryWithInputPlain<TInput, TOutput>,
 ): Procedure<TInput, TOutput>;
 export function query(
   config:
@@ -257,13 +263,19 @@ export function query(
   }) as VoidInputProcedure;
 }
 
-export function mutation<TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
-export function mutation<TInput extends ZodType, TOutput extends ZodType>(
-  config: QueryWithInputPlain<TInput, TOutput>,
-): Procedure<TInput, TOutput>;
 export function mutation<TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
 export function mutation<TInput extends ZodType, TOutput extends ZodType>(
   config: QueryWithInputPublic<TInput, TOutput>,
+): Procedure<TInput, TOutput>;
+export function mutation<TOutput extends ZodType, TClaims extends ZodType | undefined = undefined>(
+  config: QueryNoInputProtected<TOutput, TClaims>,
+): VoidInputProcedure<TOutput>;
+export function mutation<TInput extends ZodType, TOutput extends ZodType, TClaims extends ZodType | undefined = undefined>(
+  config: QueryWithInputProtected<TInput, TOutput, TClaims>,
+): Procedure<TInput, TOutput>;
+export function mutation<TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
+export function mutation<TInput extends ZodType, TOutput extends ZodType>(
+  config: QueryWithInputPlain<TInput, TOutput>,
 ): Procedure<TInput, TOutput>;
 export function mutation(
   config:
@@ -337,10 +349,10 @@ export type InferProcedureOutput<T> = T extends Procedure<ZodType, infer O>
 
 export type InferClient<T> = {
   [K in keyof T]: T[K] extends Router<infer R>
-    ? InferClient<R>
-    : T[K] extends Procedure<infer I, infer O>
-      ? InferClientProcedure<T[K]>
-      : never;
+  ? InferClient<R>
+  : T[K] extends Procedure<infer I, infer O>
+  ? InferClientProcedure<T[K]>
+  : never;
 };
 
 export type AppClient<TRouter extends Router> = InferClient<TRouter["procedures"]>;

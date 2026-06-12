@@ -35,7 +35,7 @@ export type PublicHandlerNoInput<TOut> = () => MaybePromise<TOut>;
 
 /** Protected void-input procedure */
 export type ProtectedHandlerNoInput<TOut, TClaims extends ZodType | undefined> = (
-  ctx: ProcedureContext<Record<string, never>, TClaims>,
+  ctx: ProcedureContext<object, TClaims>,
 ) => MaybePromise<TOut>;
 
 export type VoidPublicHandler<TOut> = () => MaybePromise<TOut>;
