@@ -683,6 +683,45 @@ my-api/
 
 ---
 
+## Publishing (GitHub Actions + npm Trusted Publishing)
+
+Releases are published from CI using [npm Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC). No long-lived `NPM_TOKEN` is stored in GitHub Secrets.
+
+### One-time: configure Trusted Publisher on npm
+
+1. Sign in at [npmjs.com](https://www.npmjs.com) → open the **ovenless** package → **Settings** → **Trusted Publisher** (or **Publishing access** → add trusted publisher).
+2. Choose **GitHub Actions** and enter:
+
+   | Field | Value |
+   |-------|--------|
+   | Organization or user | `gbmungunshagai-png` |
+   | Repository | `ovenless` |
+   | Workflow filename | `publish.yml` |
+   | Environment | *(leave empty unless you add a GitHub Environment)* |
+
+3. Save. Fields are **case-sensitive** and must match the workflow file name exactly.
+
+Ensure the package is **not** set to “Require two-factor authentication and **disallow tokens**” in a way that blocks CI — Trusted Publishing uses OIDC, not granular tokens.
+
+### Release flow
+
+1. Bump `version` in `package.json` (e.g. `0.1.2` → `0.1.3`).
+2. Commit and push to `main`.
+3. Tag and push (tag must match `package.json` version):
+
+   ```bash
+   git tag v0.1.3
+   git push origin v0.1.3
+   ```
+
+   The [Publish](.github/workflows/publish.yml) workflow runs tests, builds via `prepublishOnly`, and runs `npm publish`.
+
+4. Or trigger manually: **Actions** → **Publish** → **Run workflow**.
+
+CI on every push/PR is handled by [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+---
+
 ## Scripts (developing Ovenless itself)
 
 ```bash

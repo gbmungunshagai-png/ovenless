@@ -1,6 +1,6 @@
 {
   "name": "ovenless",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "author": "G.B.Mungunshagai",
   "private": false,
@@ -21,6 +21,10 @@
     "aws-api-gateway"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/gbmungunshagai-png/ovenless"
