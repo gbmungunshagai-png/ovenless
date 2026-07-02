@@ -60,6 +60,8 @@ export async function runCli(argv: string[]): Promise<void> {
       return;
 
     default:
-      throw new Error(`Unknown command: ${command}\nRun "ovenless help" for usage.`);
+      throw new Error(
+        `Unknown command: ${command}\nRun "ovenless help" for usage.`,
+      );
   }
 }

@@ -1,14 +1,14 @@
-import { join } from "node:path";
 import type { OvenlessProfile } from "../config.ts";
 import { runDevServer } from "./dev-server.ts";
 
 export async function runStart(profile: OvenlessProfile, watch: boolean): Promise<void> {
-  if (watch) {
-    const runner = join(import.meta.dir, "dev-server.ts");
+  // ponytail: re-exec the bundled CLI under `bun --watch` instead of a separate
+  // dev-server.ts, which doesn't exist once the build bundles everything into cli.js.
+  if (watch && !process.env.OVENLESS_WATCH_CHILD) {
     const child = Bun.spawn({
-      cmd: [process.execPath, "--watch", runner],
+      cmd: [process.execPath, "--watch", process.argv[1], "start", "--watch", "--profile", profile],
       cwd: process.cwd(),
-      env: { ...process.env, OVENLESS_PROFILE: profile },
+      env: { ...process.env, OVENLESS_PROFILE: profile, OVENLESS_WATCH_CHILD: "1" },
       stdout: "inherit",
       stderr: "inherit",
       stdin: "inherit",
