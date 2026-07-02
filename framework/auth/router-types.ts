@@ -26,9 +26,11 @@ export type ProtectedHandler<TIn, TOut, TClaims extends ZodType | undefined> = (
 ) => MaybePromise<TOut>;
 
 /** Public procedure with input (e.g. login) */
-export type PublicHandler<TIn, TOut> = (
-  ctx: PublicProcedureContext<TIn>,
-) => MaybePromise<TOut>;
+export type PublicHandler<
+  TIn,
+  TOut,
+  TClaims extends ZodType | undefined = undefined,
+> = (ctx: PublicProcedureContext<TIn, TClaims>) => MaybePromise<TOut>;
 
 /** Public void-input procedure */
 export type PublicHandlerNoInput<TOut> = () => MaybePromise<TOut>;

@@ -2,6 +2,8 @@ export {
   createRouter,
   query,
   mutation,
+  withClaims,
+  type ClaimsScopedProcedures,
   voidInput,
   type Procedure,
   type Router,

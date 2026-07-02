@@ -2,6 +2,8 @@ export {
   createRouter,
   query,
   mutation,
+  withClaims,
+  type ClaimsScopedProcedures,
   isProcedure,
   isRouter,
   collectProcedures,

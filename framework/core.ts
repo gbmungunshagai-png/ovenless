@@ -155,28 +155,32 @@ type ProcedureConfigBase = {
 
 // --- Query overloads (no auth / public) ---
 
-type QueryNoInputPublic<TOutput extends ZodType> = ProcedureConfigBase & {
+export type QueryNoInputPublic<TOutput extends ZodType> = ProcedureConfigBase & {
   meta: { public: true };
   input?: never;
   output: TOutput;
   handler: VoidPublicHandler<TOutput> | PublicHandlerNoInput<TOutput>;
 };
 
-type QueryWithInputPublic<TInput extends ZodType, TOutput extends ZodType> = ProcedureConfigBase & {
+export type QueryWithInputPublic<
+  TInput extends ZodType,
+  TOutput extends ZodType,
+  TClaims extends ZodType | undefined = undefined,
+> = ProcedureConfigBase & {
   meta: { public: true };
   input: TInput;
   output: TOutput;
-  handler: PublicHandler<z.infer<TInput>, z.infer<TOutput>>;
+  handler: PublicHandler<z.infer<TInput>, z.infer<TOutput>, TClaims>;
 };
 
-type QueryNoInputProtected<TOutput extends ZodType, TClaims extends ZodType | undefined> = {
+export type QueryNoInputProtected<TOutput extends ZodType, TClaims extends ZodType | undefined> = {
   meta?: { public?: false };
   input?: never;
   output: TOutput;
   handler: ProtectedHandlerNoInput<z.infer<TOutput>, TClaims>;
 };
 
-type QueryWithInputProtected<
+export type QueryWithInputProtected<
   TInput extends ZodType,
   TOutput extends ZodType,
   TClaims extends ZodType | undefined,
@@ -187,13 +191,13 @@ type QueryWithInputProtected<
   handler: ProtectedHandler<z.infer<TInput>, z.infer<TOutput>, TClaims>;
 };
 
-type QueryNoInputPlain<TOutput extends ZodType> = ProcedureConfigBase & {
+export type QueryNoInputPlain<TOutput extends ZodType> = ProcedureConfigBase & {
   input?: never;
   output: TOutput;
   handler: () => MaybePromise<z.infer<TOutput>>;
 };
 
-type QueryWithInputPlain<TInput extends ZodType, TOutput extends ZodType> = ProcedureConfigBase & {
+export type QueryWithInputPlain<TInput extends ZodType, TOutput extends ZodType> = ProcedureConfigBase & {
   input: TInput;
   output: TOutput;
   handler: (input: z.infer<TInput>) => MaybePromise<z.infer<TOutput>>;
@@ -221,9 +225,11 @@ type QueryWithInputAuth<
 };
 
 export function query<TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
-export function query<TInput extends ZodType, TOutput extends ZodType>(
-  config: QueryWithInputPublic<TInput, TOutput>,
-): Procedure<TInput, TOutput>;
+export function query<
+  TInput extends ZodType,
+  TOutput extends ZodType,
+  TClaims extends ZodType | undefined = undefined,
+>(config: QueryWithInputPublic<TInput, TOutput, TClaims>): Procedure<TInput, TOutput>;
 export function query<TOutput extends ZodType, TClaims extends ZodType | undefined = undefined>(
   config: QueryNoInputProtected<TOutput, TClaims>,
 ): VoidInputProcedure<TOutput>;
@@ -264,9 +270,11 @@ export function query(
 }
 
 export function mutation<TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
-export function mutation<TInput extends ZodType, TOutput extends ZodType>(
-  config: QueryWithInputPublic<TInput, TOutput>,
-): Procedure<TInput, TOutput>;
+export function mutation<
+  TInput extends ZodType,
+  TOutput extends ZodType,
+  TClaims extends ZodType | undefined = undefined,
+>(config: QueryWithInputPublic<TInput, TOutput, TClaims>): Procedure<TInput, TOutput>;
 export function mutation<TOutput extends ZodType, TClaims extends ZodType | undefined = undefined>(
   config: QueryNoInputProtected<TOutput, TClaims>,
 ): VoidInputProcedure<TOutput>;
@@ -337,6 +345,44 @@ export function createRouter<T extends RouterRecord>(
 
 export function getRouterAuth(router: Router): ResolvedAuthConfig | undefined {
   return router.auth;
+}
+
+/** query/mutation bound to a claims schema, so handler `claims` and `auth.sign()` are checked against it */
+export interface ClaimsScopedProcedures<TClaims extends ZodType> {
+  query: {
+    <TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
+    <TInput extends ZodType, TOutput extends ZodType>(
+      config: QueryWithInputPublic<TInput, TOutput, TClaims>,
+    ): Procedure<TInput, TOutput>;
+    <TOutput extends ZodType>(config: QueryNoInputProtected<TOutput, TClaims>): VoidInputProcedure<TOutput>;
+    <TInput extends ZodType, TOutput extends ZodType>(
+      config: QueryWithInputProtected<TInput, TOutput, TClaims>,
+    ): Procedure<TInput, TOutput>;
+    <TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
+    <TInput extends ZodType, TOutput extends ZodType>(
+      config: QueryWithInputPlain<TInput, TOutput>,
+    ): Procedure<TInput, TOutput>;
+  };
+  mutation: {
+    <TOutput extends ZodType>(config: QueryNoInputPublic<TOutput>): VoidInputProcedure<TOutput>;
+    <TInput extends ZodType, TOutput extends ZodType>(
+      config: QueryWithInputPublic<TInput, TOutput, TClaims>,
+    ): Procedure<TInput, TOutput>;
+    <TOutput extends ZodType>(config: QueryNoInputProtected<TOutput, TClaims>): VoidInputProcedure<TOutput>;
+    <TInput extends ZodType, TOutput extends ZodType>(
+      config: QueryWithInputProtected<TInput, TOutput, TClaims>,
+    ): Procedure<TInput, TOutput>;
+    <TOutput extends ZodType>(config: QueryNoInputPlain<TOutput>): VoidInputProcedure<TOutput>;
+    <TInput extends ZodType, TOutput extends ZodType>(
+      config: QueryWithInputPlain<TInput, TOutput>,
+    ): Procedure<TInput, TOutput>;
+  };
+}
+
+/** Bind query/mutation to a claims schema: handler `claims` fields and `auth.sign()` calls are typechecked against it */
+export function withClaims<TClaims extends ZodType>(claimsSchema: TClaims): ClaimsScopedProcedures<TClaims> {
+  void claimsSchema;
+  return { query, mutation } as unknown as ClaimsScopedProcedures<TClaims>;
 }
 
 export type InferProcedureInput<T> = T extends Procedure<infer I, ZodType>

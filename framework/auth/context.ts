@@ -54,8 +54,8 @@ export interface VerifiedToken {
   raw: string;
 }
 
-export interface JwtRuntime {
-  sign(input: SignTokenInput): Promise<string>;
+export interface JwtRuntime<TClaims = Record<string, unknown>> {
+  sign(input: SignTokenInput<TClaims>): Promise<string>;
   setCookie(token: string): void;
   clearCookie(): void;
 }
@@ -68,12 +68,12 @@ export type AuthClaims<TClaims extends ZodType | undefined> = TClaims extends Zo
 export interface AuthContext<TClaims extends ZodType | undefined = undefined> {
   principalId: string;
   claims: AuthClaims<TClaims>;
-  auth: JwtRuntime;
+  auth: JwtRuntime<AuthClaims<TClaims>>;
 }
 
 /** Handler context for public procedures (login, health) */
-export interface PublicAuthContext {
-  auth: JwtRuntime;
+export interface PublicAuthContext<TClaims extends ZodType | undefined = undefined> {
+  auth: JwtRuntime<AuthClaims<TClaims>>;
 }
 
 /**
@@ -87,13 +87,16 @@ export type ProcedureContext<
   input: TInput;
   principalId: string;
   claims: AuthClaims<TClaims>;
-  auth: JwtRuntime;
+  auth: JwtRuntime<AuthClaims<TClaims>>;
 };
 
 /** Public procedure handler context (no principalId until signed in) */
-export type PublicProcedureContext<TInput> = TInput & {
+export type PublicProcedureContext<
+  TInput,
+  TClaims extends ZodType | undefined = undefined,
+> = TInput & {
   input: TInput;
-  auth: JwtRuntime;
+  auth: JwtRuntime<AuthClaims<TClaims>>;
 };
 
 export function mergeProtectedContext<TInput extends object>(

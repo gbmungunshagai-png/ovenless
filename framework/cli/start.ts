@@ -9,7 +9,8 @@ export async function runStart(
   // dev-server.ts, which doesn't exist once the build bundles everything into cli.js.
   if (watch && !process.env.OVENLESS_WATCH_CHILD) {
     const entry = process.argv[1];
-    if (!entry) throw new Error("Cannot determine CLI entry point for watch mode");
+    if (!entry)
+      throw new Error("Cannot determine CLI entry point for watch mode");
     const child = Bun.spawn({
       cmd: [
         process.execPath,
